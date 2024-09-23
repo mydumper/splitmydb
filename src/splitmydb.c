@@ -75,6 +75,7 @@ int main(int argc, char *argv[]) {
     g_print("option parsing failed: %s, try --help\n", error->message);
     exit(EXIT_FAILURE);
   }
+  initialize_connection("splitmydb");
   set_connection_defaults_file_and_group(defaults_file,NULL);
   if (tables_skiplist_file)
     read_tables_skiplist(tables_skiplist_file, &errors);
@@ -88,7 +89,7 @@ int main(int argc, char *argv[]) {
   g_message("Connecting to SOURCE");
   smd_connect(conn,SOURCE,db);
   g_message("Connecting to DESTINATION");
-  smd_connect(dest_conn,DESTINATION,NULL);
+  smd_connect(dest_conn,DESTINATION,dest_db);
   GHashTable * dd=g_hash_table_new ( g_str_hash, g_str_equal );
 
   g_message("Getting Structure");

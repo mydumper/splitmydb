@@ -160,10 +160,12 @@ void configure_connection(MYSQL *conn) {
 
   mysql_options(conn, MYSQL_OPT_LOCAL_INFILE, NULL);
 
+  g_assert(program_name!=NULL);
   mysql_options4(conn, MYSQL_OPT_CONNECT_ATTR_ADD, "program_name", program_name);
   gchar *version=g_strdup_printf("Release %s", VERSION);
   mysql_options4(conn, MYSQL_OPT_CONNECT_ATTR_ADD, "app_version", version);
   g_free(version);
+
   if (compress_protocol)
     mysql_options(conn, MYSQL_OPT_COMPRESS, NULL);
 
@@ -316,8 +318,7 @@ void print_connection_details_once(){
 
 void m_connect(MYSQL *conn, gchar *schema){
   configure_connection(conn);
-  if (!mysql_real_connect(conn, hostname, username, password, schema, port,
-                          socket_path, 0)) {
+  if (!mysql_real_connect(conn, hostname, username, password, schema, port, socket_path, 0)) {
     m_critical("Error connection to database: %s", mysql_error(conn));
   }
   print_connection_details_once();
