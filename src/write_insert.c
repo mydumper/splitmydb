@@ -1131,6 +1131,106 @@ void fill_with_ids(struct db_table *dbt, gchar *column, struct column_hash * col
 }
 
 
+
+void write_sql_column_into_string( MYSQL *conn, gchar **column, MYSQL_FIELD field, gulong length,GString *escaped, GString *statement_row, struct column_hash *tmp_column){
+    /* Don't escape safe formats, saves some time */
+    gboolean (*fun_ptr_i)(GHashTable*,gchar **, gchar**) = &identity_function;
+  //    struct function_pointer *fun_ptr_i=&identity_function;
+    gboolean hex_blob=FALSE;
+    gchar *new_value_ptr=NULL;
+    if (!*column) {
+      g_string_append(statement_row, "NULL");
+    } else if (field.flags & NUM_FLAG) {
+      if (tmp_column && fun_ptr_i(tmp_column->hash, column, &new_value_ptr)){
+        g_string_append(statement_row, new_value_ptr);
+        g_free(new_value_ptr);
+      }else{
+        g_string_append(statement_row, *column);
+      }
+    } else if ( length == 0){
+      g_string_append_c(statement_row,*fields_enclosed_by);
+      g_string_append_c(statement_row,*fields_enclosed_by);
+    } else if ( field.type == MYSQL_TYPE_BLOB && hex_blob ) {
+      g_string_set_size(escaped, length * 2 + 1);
+      g_string_append(statement_row,"0x");
+      mysql_hex_string(escaped->str,*column,length);
+      g_string_append(statement_row,escaped->str);
+    } else {
+      /* We reuse buffers for string escaping, growing is expensive just at
+ *        * the beginning */
+      g_string_set_size(escaped, length * 2 + 1);
+      mysql_real_escape_string(conn, escaped->str, *column, length);
+      if (field.type == MYSQL_TYPE_JSON)
+        g_string_append(statement_row, "CONVERT(");
+      g_string_append_c(statement_row, *fields_enclosed_by);
+      g_string_append(statement_row, escaped->str);
+      g_string_append_c(statement_row, *fields_enclosed_by);
+      if (field.type == MYSQL_TYPE_JSON)
+        g_string_append(statement_row, " USING UTF8MB4)");
+    }
+}
+/*
+    gboolean (*fun_ptr2)(GHashTable*,gchar **, gchar**) = &identity_function;
+    for (i = 0; i < select_count ; i++) {
+        tmp_column=column_hash_lookup(dbt->parent_table,key_fields[i]);
+//       if (tmp_column != NULL){
+//          g_message("Column FOUND: `%s`.`%s`.`%s`: ", dbt->database, dbt->table, key_fields[i]);
+//        }else{
+//          g_message("Column %s: not found in `%s`.`%s`",key_fields[i],dbt->database, dbt->table);
+//        }
+//         Don't escape safe formats, saves some time 
+        if (!row[i]) {
+          g_string_append(statement_row, "NULL");
+        } else if (fields[i].flags & NUM_FLAG) {
+          if (tmp_column && fun_ptr2(tmp_column->hash, &(row[i]), &t)){
+            g_string_append(statement_row, t);
+            g_free(t);
+          }else
+            g_string_append(statement_row, row[i]);
+//          g_string_append_printf(statement_row_replaced,"%s |", row[i]);
+        } else {
+          // We reuse buffers for string escaping, growing is expensive just at
+          // the beginning 
+          g_string_set_size(escaped, lengths[i] * 2 + 1);
+          if (tmp_column && fun_ptr2(tmp_column->hash, &(row[i]), &t)){
+            mysql_real_escape_string(conn, escaped->str, t, strlen(t));
+            g_free(t);
+          }else
+            mysql_real_escape_string(conn, escaped->str, row[i], lengths[i]);
+//          g_string_append_printf(statement_row_replaced,"%s |", row[i]);
+          if (fields[i].type == MYSQL_TYPE_JSON)
+            g_string_append(statement_row, "CONVERT(");
+          g_string_append_c(statement_row, '\'');
+          g_string_append(statement_row, escaped->str);
+          g_string_append_c(statement_row, '\'');
+          if (fields[i].type == MYSQL_TYPE_JSON)
+            g_string_append(statement_row, " USING UTF8MB4)");
+        }
+        if (i < select_count - 1) {
+          g_string_append(statement_row, fields_terminated_by);
+        } else {
+          g_string_append_printf(statement_row,"%s", lines_terminated_by);
+        }
+    }
+
+*/
+
+void write_row_into_string(MYSQL *conn, struct db_table * dbt, gchar **key_fields, MYSQL_ROW row, MYSQL_FIELD *fields, gulong *lengths, guint num_fields, GString *escaped, GString *statement_row, guint select_count){
+  guint i = 0;
+  g_string_append(statement_row, lines_starting_by);
+
+  for (i = 0; i < num_fields-1; i++) {
+    write_sql_column_into_string( conn, &(row[i]), fields[i], lengths[i], escaped, statement_row, column_hash_lookup(dbt->parent_table,key_fields[i]));
+    g_string_append(statement_row, fields_terminated_by);
+  }
+  write_sql_column_into_string( conn, &(row[i]), fields[i], lengths[i], escaped, statement_row, column_hash_lookup(dbt->parent_table,key_fields[i]));
+  if (i < select_count - 1) {
+    g_string_append(statement_row, fields_terminated_by);
+  } else {
+    g_string_append_printf(statement_row,"%s", lines_terminated_by);
+  }
+}
+
 /* Do actual data chunk reading/writing magic */
 guint64 write_table_data_into_db(MYSQL *conn, FILE *file, struct table_job * tj, MYSQL *dest_conn){
   // Split by row is before this step
@@ -1148,7 +1248,6 @@ guint64 write_table_data_into_db(MYSQL *conn, FILE *file, struct table_job * tj,
   /* Buffer for escaping field values */
   GString *escaped = g_string_sized_new(3000);
   fcfile = g_strdup(tj->filename);
-  gchar **key_fields=NULL;
   /* Ghm, not sure if this should be statement_size - but default isn't too big
    * for now */
   GString *statement = g_string_sized_new(statement_size);
@@ -1157,7 +1256,7 @@ guint64 write_table_data_into_db(MYSQL *conn, FILE *file, struct table_job * tj,
   g_string_set_size(statement_row, 0);
   GString *select_fields;
 //  (void)dest_conn;
-  struct column_hash *tmp_column;
+//  struct column_hash *tmp_column;
   struct column_hash * pk_hash=column_hash_lookup(dbt->parent_table,dbt->primary_key);
   GList *values=g_hash_table_get_values(pk_hash->hash);
   gboolean we_need_the_new_pk = values->data == NULL;
@@ -1188,7 +1287,7 @@ guint64 write_table_data_into_db(MYSQL *conn, FILE *file, struct table_job * tj,
     goto cleanup;
   }
   g_message("Extraction Query: %s",query);
-  key_fields=g_strsplit(select_fields->str, ",",0);
+  gchar **key_fields=g_strsplit(select_fields->str, ",",0);
   guint select_count=g_strv_length(key_fields);
 //  g_strfreev(key_fields);
 //  key_fields=g_strsplit(dbt->select_fields_with_all_fields->str, ",",0);
@@ -1203,7 +1302,7 @@ guint64 write_table_data_into_db(MYSQL *conn, FILE *file, struct table_job * tj,
 
   g_string_set_size(statement, 0);
   /* Poor man's data dump code */
-  gchar *t=NULL;
+//  gchar *t=NULL;
   while ((row = mysql_fetch_row(result))) {
     gulong *lengths = mysql_fetch_lengths(result);
     num_rows++;
@@ -1212,17 +1311,20 @@ guint64 write_table_data_into_db(MYSQL *conn, FILE *file, struct table_job * tj,
 //    g_string_set_size(statement_row_replaced, 0);
 //    g_string_append(statement_row_replaced, "-- ");
     g_string_append(statement_row, lines_starting_by);
+
+    write_row_into_string(conn, dbt, key_fields, row, fields, lengths, num_fields, escaped, statement_row, select_count);
+/*
     gboolean (*fun_ptr2)(GHashTable*,gchar **, gchar**) = &identity_function;
     for (i = 0; i < select_count ; i++) {
         tmp_column=column_hash_lookup(dbt->parent_table,key_fields[i]);
-	/*
-        if (tmp_column != NULL){
-          g_message("Column FOUND: `%s`.`%s`.`%s`: ", dbt->database, dbt->table, key_fields[i]);
-        }else{
-          g_message("Column %s: not found in `%s`.`%s`",key_fields[i],dbt->database, dbt->table);
-        }
-	*/
-        /* Don't escape safe formats, saves some time */
+	
+//        if (tmp_column != NULL){
+//          g_message("Column FOUND: `%s`.`%s`.`%s`: ", dbt->database, dbt->table, key_fields[i]);
+//        }else{
+//          g_message("Column %s: not found in `%s`.`%s`",key_fields[i],dbt->database, dbt->table);
+//        }
+	
+        // Don't escape safe formats, saves some time 
         if (!row[i]) {
           g_string_append(statement_row, "NULL");
         } else if (fields[i].flags & NUM_FLAG) {
@@ -1233,8 +1335,8 @@ guint64 write_table_data_into_db(MYSQL *conn, FILE *file, struct table_job * tj,
             g_string_append(statement_row, row[i]);
 //          g_string_append_printf(statement_row_replaced,"%s |", row[i]);
         } else {
-          /* We reuse buffers for string escaping, growing is expensive just at
-           * the beginning */
+          // We reuse buffers for string escaping, growing is expensive just at
+          // the beginning 
           g_string_set_size(escaped, lengths[i] * 2 + 1);
           if (tmp_column && fun_ptr2(tmp_column->hash, &(row[i]), &t)){
             mysql_real_escape_string(conn, escaped->str, t, strlen(t));
@@ -1256,6 +1358,7 @@ guint64 write_table_data_into_db(MYSQL *conn, FILE *file, struct table_job * tj,
           g_string_append_printf(statement_row,"%s", lines_terminated_by);
         }
     }
+    */
     g_string_append(statement, statement_row->str);
     g_string_append(statement, " ; \n");
 //    g_string_append(statement,statement_row_replaced->str);
@@ -1349,7 +1452,7 @@ guint64 write_table_data_into_db(MYSQL *conn, FILE *file, struct table_job * tj,
     }
   }
 cleanup:
-  g_strfreev(key_fields);
+//  g_strfreev(key_fields);
   g_free(query);
 
   g_string_free(escaped, TRUE);
@@ -1369,80 +1472,6 @@ cleanup:
   g_list_free(values);
   return num_rows;
 }
-/*
-void write_table_job_into_db(MYSQL *conn, struct table_job *tj, MYSQL *dest_conn) {
-  void *outfile = NULL;
-
-  outfile = g_fopen(tj->filename,"w");
-
-  if (!outfile) {
-    g_critical("Error: DB: %s TABLE: %s Could not create output file `%s` (%d)",
-               tj->database, tj->table, tj->filename, errno);
-    errors++;
-    return;
-  }
-  guint64 rows_count =
-      write_table_data_into_db(conn, (FILE *)outfile, tj, dest_conn);
-
-  if (!rows_count)
-    g_message("Empty table %s.%s", tj->database, tj->table);
-
-}
-
-
-void write_table_job_list_into_db(MYSQL *conn, GList *tj, MYSQL *dest_conn){
-  while (tj){
-    write_table_job_into_db(conn, tj->data, dest_conn);
-    tj=tj->next;
-  }
-
-}
-
-int copy_to_dest( gchar *query, MYSQL *conn, MYSQL *new_conn, MYSQL *dest_conn, gchar *database, GString ** list_tables_done){
-  gchar * lkey;
-  FILE *file;
-  GString *g_ids = g_string_sized_new(100);
-  struct db_table *dbt=NULL;
-  MYSQL_RES *res = NULL;
-  MYSQL_ROW row;
-  g_message("Next: %s", query);
-  if (mysql_query(conn,query)){
-    g_message("Failed: %s", query);
-    exit(1);
-  }
-  res=mysql_use_result(conn);
-  gchar c=' ';
-  while ((row = mysql_fetch_row(res))) {
-    lkey=g_strdup_printf("`%s`.`%s`",database,row[0]);
-    dbt=g_hash_table_lookup(table_hash,lkey);
-    g_string_append_c(*list_tables_done,c);
-    g_string_append_printf(*list_tables_done, "'%s'",row[0]);
-    c=',';
-    if (dbt==NULL){
-      g_message("`%s`.`%s`: Not found",database,row[0]);
-      continue;
-    }
-    g_message("copy_to_dest `%s`.`%s`",dbt->database,dbt->table);
-    GHashTable *pk_hash=g_hash_table_lookup(dbt->parent_table,dbt->primary_key);
-    if (g_hash_table_size(pk_hash) > 0){
-      g_string_set_size(g_ids,0);
-      if (dbt->multicolumn)
-        g_string_append_printf(g_ids," (%s) in ",dbt->primary_key);
-      else
-        g_string_append_printf(g_ids," %s in ",dbt->primary_key);
-      hash2string(pk_hash,g_ids);
-      struct table_job * tj = new_table_job(dbt, NULL, g_ids->str, 1 );
-      file=g_fopen(tj->filename,"w");
-      write_table_data_into_db(new_conn, file, tj, dest_conn);
-    }
-  }
-  g_message("DATA: %s", (*list_tables_done)->str);
-  if (c == ',')
-    return 1;
-  return 0;
-
-}
-*/
 
 void duplicate (gchar *k, struct db_table *dbt, GHashTable *b){
   g_hash_table_insert(b, g_strdup(k), dbt);
