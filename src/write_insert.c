@@ -1312,9 +1312,9 @@ guint64 write_table_data_into_db(MYSQL *conn, FILE *file, struct table_job * tj,
     g_string_set_size(statement_row, 0);
 //    g_string_set_size(statement_row_replaced, 0);
 //    g_string_append(statement_row_replaced, "-- ");
-    g_string_append(statement_row, lines_starting_by);
+//    g_string_append(statement_row, lines_starting_by);
 
-    write_row_into_string(conn, dbt, key_fields, row, fields, lengths, num_fields, escaped, statement_row, select_count);
+    write_row_into_string(conn, dbt, key_fields, row, fields, lengths,select_count /* num_fields*/, escaped, statement_row, select_count);
 /*
     gboolean (*fun_ptr2)(GHashTable*,gchar **, gchar**) = &identity_function;
     for (i = 0; i < select_count ; i++) {
